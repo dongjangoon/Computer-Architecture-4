@@ -111,8 +111,7 @@ class IF(Pipe):
         else:
             self.exception = EXC_NONE
         #-------------------------------------------------------------
-
-
+        
         # Compute PC + 4 using an adder
         self.pcplus4    = Pipe.cpu.adder_pcplus4.op(self.pc, 4)
 
@@ -126,7 +125,7 @@ class IF(Pipe):
     def update(self):
           
         IF.reg_pc         = self.pc_next
-
+        
         ID.reg_pc         = self.pc
         ID.reg_inst       = self.inst
         ID.reg_exception  = self.exception
@@ -244,7 +243,25 @@ class ID(Pipe):
         self.op2_data   = imm_i         if self.c_op2_sel == OP2_IMI      else \
                           imm_s         if self.c_op2_sel == OP2_IMS      else \
                           WORD(0)
-    
+
+
+
+        # WB write reg should be updated
+        
+        # load-use hazard: 
+        # It should stall two cycles and do forwarding from end of M2
+        if EX.c_dmem_rw == 0 and ((EX.rd == self.rs1) or (EX.rd == self.rs2)):
+            
+            
+        # 2. M1-M2 Hazard: The second lw or sw instruction should stall one cycle
+
+
+
+        # 3. Both load-use and M1-M2: second lw or sw instruction should stall two cycle
+        #                             and do forwarding from end of M2 to EX stage
+
+
+
     def update(self):
 
         EX.reg_pc               = self.pc
