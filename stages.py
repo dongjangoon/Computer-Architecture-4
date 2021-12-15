@@ -116,22 +116,31 @@ class IF(Pipe):
         self.pcplus4    = Pipe.cpu.adder_pcplus4.op(self.pc, 4)
 
         # Check that the instruction is conditional branch
-        # If Backward, calculate the target address
+        # If Backward or jal, calculate the target address
         opcode          = RISCV.opcode(self.inst)
-        opcode_name     = RISCV.opcode_name(opcode)
+        opcode_name     = ""
 
-        imm_s           = RISCV.imm_s(self.inst) if opcode_name == "beq" or opcode_name == "bne" or opcode_name == "bge" or
+        if opcode == ILLEGAL:
+            self.exception = EXC_ILLEGAL_INST
+        else:
+            opcode_name     = RISCV.opcode_name(opcode) 
+
+        imm_b           = RISCV.imm_b(self.inst) if opcode_name == "beq" or opcode_name == "bne" or opcode_name == "bge" or     \
                                                     opcode_name == "bgeu" or opcode_name == "blt" or opcode_name == "bltu" else \
                           0
 
-        # Use Pipe.cpu.ras for the return address stack
+        imm_j           = RISCV.imm_j(self.inst) if opcode_name == "jal" else \
+                          0
 
+        # Use Pipe.cpu.ras for the return address stack
+        
         # select next pc
-        self.pc_next    =   self.pcplus4                        if Pipe.CTL.pc_sel == PC_4      else \
-                            Pipe.EX.brjmp_target                if Pipe.CTL.pc_sel == PC_BRJMP  else \
-                            Pipe.EX.jump_reg_target             if Pipe.CTL.pc_sel == PC_JALR   else \
-                            Pipe.cpu.adder_if(self.pc, imm_s)   if imm_s < 0                    else \
-                            WORD(0)  
+        self.pc_next    =   Pipe.cpu.adder_if.op(self.pc, imm_b)    if imm_b <  WORD(0)                         else \
+                            Pipe.cpu.adder_if.op(self.pc, imm_j)    if imm_j != 0                               else \
+                            self.pcplus4                            if Pipe.EX.pc_sel == PC_4 or imm_b > 0      else \
+                            Pipe.EX.pc_next                         if Pipe.EX.pc_sel == PC_BRJMP               else \
+                            Pipe.EX.jump_reg_target                 if Pipe.EX.pc_sel == PC_JALR                else \
+                            self.pcplus4
 
 
     def update(self):
@@ -142,8 +151,13 @@ class IF(Pipe):
         if Pipe.ID.load_use_hazard:  # for second stall 
             ID.IF_stall         = ID.load_use_hazard
             ID.ID_stall         = ID.load_use_hazard
-        
-        if not Pipe.  ID.ID_stall:
+
+        if Pipe.EX.ID_bubble:
+            ID.reg_pc           = self.pc
+            ID.reg_inst         = WORD(BUBBLE)
+            ID.reg_exception    = WORD(EXC_NONE)
+            ID.reg_pcplus4      = WORD(0)
+        elif not Pipe.ID.ID_stall:
             ID.reg_pc           = self.pc
             ID.reg_inst         = self.inst
             ID.reg_exception    = self.exception
@@ -316,9 +330,9 @@ class ID(Pipe):
                                (Pipe.EX.reg_rd == self.rs2 and self.c_rs2_oen == CS_RS2_OEN))
 
         # 2. M1-M2 Hazard: The second lw or sw instruction should stall one cycle
-        EX_lw_sw            = Pipe.EX.reg_c_dmem_en and (Pipe.Ex.reg_c_dmem_rw == M_XRD or Pipe.Ex.reg_c_dmem_rw == M_XWR)
-        ID_lw_sw            = self.c_dmem_en and (self.c_dmem_rw == M_XRD or Pipe.EX.reg_c_dmem_rw == M_XWR)
-        m1_m2_hazard        = (EX_lw_sw and Pipe.Ex.reg_rd != 0) and (ID_lw_sw and self.reg_rd != 0)
+        EX_lw_sw            = Pipe.EX.reg_c_dmem_en and (Pipe.EX.reg_c_dmem_rw == M_XRD or Pipe.EX.reg_c_dmem_rw == M_XWR)
+        ID_lw_sw            = self.c_dmem_en and (self.c_dmem_rw == M_XRD or self.c_dmem_rw == M_XWR)
+        m1_m2_hazard        = (EX_lw_sw and Pipe.EX.reg_rd != 0) and (ID_lw_sw and self.rd != 0)
 
         # 3. Both load-use and M1-M2: second lw or sw instruction should stall two cycle same as Load-Use Hazard
         # It can be detected by Load-Use hazard
@@ -335,7 +349,7 @@ class ID(Pipe):
 
         EX.reg_pc                   = self.pc
 
-        if Pipe.ID.EX_bubble:
+        if Pipe.ID.EX_bubble or Pipe.EX.EX_bubble:
             EX.reg_inst             = WORD(BUBBLE)
             EX.reg_exception        = WORD(EXC_NONE)
             EX.reg_c_br_type        = WORD(BR_N)
@@ -390,6 +404,7 @@ class EX(Pipe):
     reg_c_rf_wen        = False             # EX.reg_c_rf_wen
     reg_c_dmem_en       = False             # EX.reg_c_dmem_en
     reg_c_dmem_rw       = WORD(M_X)         # EX.reg_c_dmem_rw
+    reg_c_br_type       = WORD(BR_N)        # EX.reg_c_br_type
 
     #--------------------------------------------------
 
@@ -433,6 +448,20 @@ class EX(Pipe):
         self.c_rf_wen           = EX.reg_c_rf_wen
         self.c_dmem_en          = EX.reg_c_dmem_en
         self.c_dmem_rw          = EX.reg_c_dmem_rw
+        self.c_br_type          = EX.reg_c_br_type
+
+        self.EX_bubble          = False
+        self.ID_bubble          = False
+        self.pc_next            = self.pc
+
+        # Check that the instruction is conditional branch
+        # If Backward or jal, calculate the target address
+        opcode          = RISCV.opcode(self.inst)
+        opcode_name     = RISCV.opcode_name(opcode)
+
+        imm_b           = RISCV.imm_b(self.inst) if opcode_name == "beq" or opcode_name == "bne" or opcode_name == "bge" or     \
+                                                    opcode_name == "bgeu" or opcode_name == "blt" or opcode_name == "bltu" else \
+                          0
 
         # The second input to ALU should be put into self.alu2_data for correct log msg.
         self.alu2_data          = self.op2_data
@@ -440,19 +469,37 @@ class EX(Pipe):
         # Perform ALU operation
         self.alu_out = Pipe.cpu.alu.op(self.c_alu_fun, self.op1_data, self.alu2_data)
 
+        # Adjust the output for jalr instruction (forwarded to IF)
+        self.jump_reg_target    = self.alu_out & WORD(0xfffffffe) 
+
         # Calculate the branch/jump target address using an adder (forwarded to IF)
         self.brjmp_target       = Pipe.cpu.adder_brtarget.op(self.pc, self.op2_data) 
 
-        # Check for wrong prediction for taken
-        self.pc_sel         =       if  (EX.reg_c_br_type == BR_NE  and Pipe.EX.alu_out) or                     \
-                                        (EX.reg_c_br_type == BR_EQ  and (not Pipe.EX.alu_out)) or               \
-                                        (EX.reg_c_br_type == BR_GE  and Pipe.EX.alu_out) or                     \
-                                        (EX.reg_c_br_type == BR_GEU and Pipe.EX.alu_out) or                     \
-                                        (EX.reg_c_br_type == BR_LT  and (not Pipe.EX.alu_out)) or               \
-                                        (EX.reg_c_br_type == BR_LTU and (not Pipe.EX.alu_out)) or  else         \
-                                PC_JALR     if  EX.reg_c_br_type == BR_JR
+        # Check for wrong prediction
+        self.pc_sel         =   PC_BRJMP        if  (Pipe.EX.reg_c_br_type == BR_NE and Pipe.EX.alu_out) or                  \
+                                                (Pipe.EX.reg_c_br_type == BR_EQ  and (not Pipe.EX.alu_out)) or               \
+                                                (Pipe.EX.reg_c_br_type == BR_GE  and Pipe.EX.alu_out) or                     \
+                                                (Pipe.EX.reg_c_br_type == BR_GEU and Pipe.EX.alu_out) or                     \
+                                                (Pipe.EX.reg_c_br_type == BR_LT  and (not Pipe.EX.alu_out)) or               \
+                                                (Pipe.EX.reg_c_br_type == BR_LTU and (not Pipe.EX.alu_out))  else            \
+                                PC_JALR     if  Pipe.EX.reg_c_br_type == BR_JR   else                                        \
+                                PC_4
 
-        # Check for wrong prediction for not-taken
+        pcplus4    = Pipe.cpu.adder_pcplus4.op(self.pc, 4)
+
+        # Wrong prediction or JALR, ID and IF bubble
+        if  (imm_b < 0 and self.pc_sel == PC_BRJMP):
+            self.EX_bubble  = True
+            self.ID_bubble  = True
+            self.pc_next    = pcplus4
+        elif  (imm_b > 0 and self.pc_sel == PC_BRJMP):
+            self.EX_bubble  = True
+            self.ID_bubble  = True
+            self.pc_next    = self.brjmp_target
+        elif self.pc_sel == PC_JALR:
+            self.EX_bubble  = True
+            self.ID_bubble  = True
+            
         
 
 
