@@ -133,8 +133,10 @@ class IF(Pipe):
                           0
 
         # Use Pipe.cpu.ras for the return address stack
+        if (opcode_name == "jal" or opcode_name == "jalr") and self.rd == 1:
+            Pipe.cpu.ras.
         
-        # select next pc
+        # select next pcpush
         self.pc_next    =   Pipe.cpu.adder_if.op(self.pc, imm_b)    if imm_b <  WORD(0)                         else \
                             Pipe.cpu.adder_if.op(self.pc, imm_j)    if imm_j != 0                               else \
                             Pipe.EX.brjmp_target                    if Pipe.EX.pc_sel == PC_BRJMP               else \
@@ -315,13 +317,13 @@ class ID(Pipe):
         # The order matters: EX -> MM -> WB (forwarding from the closest stage)
         # For sw and branch instructions, we need to carry R[rs2] as well
         # -- in these instructions, op2_data will hold an immediate value
-        self.rs2_data = Pipe.EX.alu_out      if  (Pipe.EX.reg_rd == self.rs2) and (self.c_op2_sel == OP2_RS2) and   \
+        self.rs2_data = Pipe.EX.alu_out      if  (Pipe.EX.reg_rd == self.rs2) and (self.c_rs2_oen == OEN_1) and   \
                                                 (Pipe.EX.reg_rd != 0) and Pipe.EX.c_rf_wen else        \
-                        Pipe.M1.alu_out     if (Pipe.M1.reg_rd == self.rs2) and (self.c_op2_sel == OP2_RS2) and       \
+                        Pipe.M1.alu_out     if (Pipe.M1.reg_rd == self.rs2) and (self.c_rs2_oen == OEN_1) and       \
                                                 (Pipe.M1.reg_rd != 0) and Pipe.M1.c_rf_wen else                         \
-                        Pipe.M2.wbdata       if  (Pipe.M2.reg_rd == self.rs2) and (self.c_op2_sel == OP2_RS2) and   \
+                        Pipe.M2.wbdata       if  (Pipe.M2.reg_rd == self.rs2) and (self.c_rs2_oen == OEN_1) and   \
                                                 (Pipe.M2.reg_rd != 0) and Pipe.M2.c_rf_wen else            \
-                        Pipe.WB.wbdata       if  (Pipe.WB.reg_rd == self.rs2) and (self.c_op2_sel == OP2_RS2) and   \
+                        Pipe.WB.wbdata       if  (Pipe.WB.reg_rd == self.rs2) and (self.c_rs2_oen == OEN_1) and   \
                                                 (Pipe.WB.reg_rd != 0) and Pipe.WB.c_rf_wen else        \
                         rf_rs2_data
 
