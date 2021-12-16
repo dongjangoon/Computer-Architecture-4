@@ -137,9 +137,9 @@ class IF(Pipe):
         # select next pc
         self.pc_next    =   Pipe.cpu.adder_if.op(self.pc, imm_b)    if imm_b <  WORD(0)                         else \
                             Pipe.cpu.adder_if.op(self.pc, imm_j)    if imm_j != 0                               else \
-                            self.pcplus4                            if Pipe.EX.pc_sel == PC_4 or imm_b > 0      else \
-                            Pipe.EX.pc_next                         if Pipe.EX.pc_sel == PC_BRJMP               else \
+                            Pipe.EX.brjmp_target                    if Pipe.EX.pc_sel == PC_BRJMP               else \
                             Pipe.EX.jump_reg_target                 if Pipe.EX.pc_sel == PC_JALR                else \
+                            Pipe.EX.pcplus4                         if Pipe.EX.pc_sel == PC_4                   else \
                             self.pcplus4
 
 
@@ -147,10 +147,6 @@ class IF(Pipe):
           
         if not Pipe.ID.IF_stall:
             IF.reg_pc           = self.pc_next
-
-        if Pipe.ID.load_use_hazard:  # for second stall 
-            ID.IF_stall         = ID.load_use_hazard
-            ID.ID_stall         = ID.load_use_hazard
 
         if Pipe.EX.ID_bubble:
             ID.reg_pc           = self.pc
@@ -292,42 +288,52 @@ class ID(Pipe):
         # Determine ALU operand 1: PC or R[rs1]
         # Get forwarded value for rs1 if necessary
         # The order matters: EX -> MM -> WB (forwarding from the closest stage)
-        self.op1_data = self.pc         if  self.c_op1_sel == OP1_PC               else                             \
-                        Pipe.EX.alu_out      if  (Pipe.EX.reg_rd == self.rs1) and self.c_rs1_oen == CS_RS1_OEN and  \
-                                            (Pipe.Ex.reg_rd != 0) and Pipe.Ex.reg_c_rf_wen else                     \
-                        Pipe.M2.wbdata       if  (M2.reg_rd == self.rs1) and self.c_rs1_oen == CS_RS1_OEN and       \
-                                            (Pipe.M2.reg_rd != 0) and Pipe.M2.c_rf_wen else                         \
-                        Pipe.WB.wbdata       if  (WB.reg_rd == self.rs1) and self.c_rs1_oen == CS_RS1_OEN and       \
-                                            (Pipe.WB.reg_rd != 0) and Pipe.WB.reg_c_rf_wen else                     \
+        self.op1_data = self.pc             if  self.c_op1_sel == OP1_PC               else                         \
+                        Pipe.EX.alu_out     if (Pipe.EX.reg_rd == self.rs1) and (self.c_op1_sel == OP1_RS1) and  \
+                                                (Pipe.EX.reg_rd != 0) and Pipe.EX.c_rf_wen else                     \
+                        Pipe.M1.alu_out     if (Pipe.M1.reg_rd == self.rs1) and (self.c_op1_sel == OP1_RS1) and       \
+                                                (Pipe.M1.reg_rd != 0) and Pipe.M1.c_rf_wen else                         \
+                        Pipe.M2.wbdata      if (Pipe.M2.reg_rd == self.rs1) and (self.c_op1_sel == OP1_RS1) and       \
+                                                (Pipe.M2.reg_rd != 0) and Pipe.M2.c_rf_wen else                         \
+                        Pipe.WB.wbdata      if (Pipe.WB.reg_rd == self.rs1) and (self.c_op1_sel == OP1_RS1) and       \
+                                                (Pipe.WB.reg_rd != 0) and Pipe.WB.reg_c_rf_wen else                     \
                         rf_rs1_data
 
         # Get forwarded value for rs2 if necessary
         # The order matters: EX -> MM -> WB (forwarding from the closest stage)
-        self.op2_data = Pipe.EX.alu_out      if  (Pipe.EX.reg_rd == self.rs2) and self.c_op2_sel == OP2_RS2 and     \
-                                            (Pipe.EX.reg_rd != 0) and Pipe.EX.reg_c_rf_wen else                     \
-                        Pipe.M2.wbdata       if  (Pipe.M2.reg_rd == self.rs2) and self.c_op2_sel == OP2_RS2 and     \
-                                            (Pipe.M2.reg_rd != 0) and Pipe.M2.c_rf_wen else                              \
-                        Pipe.WB.wbdata       if  (WB.reg_rd == self.rs2) and self.c_op2_sel == OP2_RS2 and          \
-                                            (Pipe.WB.reg_rd != 0) and Pipe.WB.reg_c_rf_wen else                     \
+        self.op2_data = Pipe.EX.alu_out      if  (Pipe.EX.reg_rd == self.rs2) and (self.c_op2_sel == OP2_RS2) and     \
+                                                (Pipe.EX.reg_rd != 0) and Pipe.EX.c_rf_wen else                     \
+                        Pipe.M1.alu_out     if (Pipe.M1.reg_rd == self.rs2) and (self.c_op2_sel == OP2_RS2) and       \
+                                                (Pipe.M1.reg_rd != 0) and Pipe.M1.c_rf_wen else                         \
+                        Pipe.M2.wbdata       if  (Pipe.M2.reg_rd == self.rs2) and (self.c_op2_sel == OP2_RS2) and     \
+                                                (Pipe.M2.reg_rd != 0) and Pipe.M2.c_rf_wen else                              \
+                        Pipe.WB.wbdata       if  (Pipe.WB.reg_rd == self.rs2) and (self.c_op2_sel == OP2_RS2) and          \
+                                                (Pipe.WB.reg_rd != 0) and Pipe.WB.c_rf_wen else                     \
                         alu_op2
 
         # Get forwarded value for rs2 if necessary
         # The order matters: EX -> MM -> WB (forwarding from the closest stage)
         # For sw and branch instructions, we need to carry R[rs2] as well
         # -- in these instructions, op2_data will hold an immediate value
-        self.rs2_data = Pipe.EX.alu_out      if  (Pipe.EX.reg_rd == self.rs2) and self.c_rs2_oen == CS_RS2_OEN and   \
-                                            (Pipe.Ex.reg_rd != 0) and Pipe.Ex.reg_c_rf_wen else        \
-                        Pipe.M2.wbdata       if  (M2.reg_rd == self.rs2) and self.c_rs2_oen == CS_RS2_OEN and   \
-                                            (Pipe.M2.reg_rd != 0) and Pipe.M2.c_rf_wen else            \
-                        Pipe.WB.wbdata       if  (Pipe.WB.reg_rd == self.rs2) and self.c_rs2_oen == CS_RS2_OEN and   \
-                                            (Pipe.WB.reg_rd != 0) and Pipe.WB.reg_c_rf_wen else        \
+        self.rs2_data = Pipe.EX.alu_out      if  (Pipe.EX.reg_rd == self.rs2) and (self.c_op2_sel == OP2_RS2) and   \
+                                                (Pipe.EX.reg_rd != 0) and Pipe.EX.c_rf_wen else        \
+                        Pipe.M1.alu_out     if (Pipe.M1.reg_rd == self.rs2) and (self.c_op2_sel == OP2_RS2) and       \
+                                                (Pipe.M1.reg_rd != 0) and Pipe.M1.c_rf_wen else                         \
+                        Pipe.M2.wbdata       if  (Pipe.M2.reg_rd == self.rs2) and (self.c_op2_sel == OP2_RS2) and   \
+                                                (Pipe.M2.reg_rd != 0) and Pipe.M2.c_rf_wen else            \
+                        Pipe.WB.wbdata       if  (Pipe.WB.reg_rd == self.rs2) and (self.c_op2_sel == OP2_RS2) and   \
+                                                (Pipe.WB.reg_rd != 0) and Pipe.WB.c_rf_wen else        \
                         rf_rs2_data
 
         # 1. Check for load-use data hazard
-        EX_load_inst        = Pipe.EX.reg_c_dmem_en and Pipe.EX.reg_c_dmem_rw == M_XRD
+        EX_load_inst        = Pipe.EX.c_dmem_en and (Pipe.EX.c_dmem_rw == M_XRD)
         load_use_hazard     = (EX_load_inst and EX.reg_rd != 0) and                         \
-                              ((Pipe.EX.reg_rd == self.rs1 and self.c_rs1_oen == CS_RS1_OEN) or  \
-                               (Pipe.EX.reg_rd == self.rs2 and self.c_rs2_oen == CS_RS2_OEN))
+                              (((Pipe.EX.reg_rd == self.rs1) and (self.c_op1_sel == OP1_RS1)) or  \
+                               ((Pipe.EX.reg_rd == self.rs2) and (self.c_op2_sel == OP2_RS2)))
+        M1_load_inst        = Pipe.M1.reg_c_dmem_en and (Pipe.M1.reg_c_dmem_rw == M_XRD)
+        load_use_hazard_2     = (M1_load_inst and M1.reg_rd != 0) and                         \
+                              (((Pipe.M1.reg_rd == self.rs1) and (self.c_op1_sel == OP1_RS1)) or  \
+                               ((Pipe.M1.reg_rd == self.rs2) and (self.c_op2_sel == OP2_RS2)))
 
         # 2. M1-M2 Hazard: The second lw or sw instruction should stall one cycle
         EX_lw_sw            = Pipe.EX.reg_c_dmem_en and (Pipe.EX.reg_c_dmem_rw == M_XRD or Pipe.EX.reg_c_dmem_rw == M_XWR)
@@ -339,17 +345,19 @@ class ID(Pipe):
 
         # For load-use hazard, ID and IF are stalled for two cycle (and EX bubbled)
         # For mispredicted branches, instructions in ID and IF should be cancelled (become BUBBLE)
-        self.IF_stall       = load_use_hazard or m1_m2_hazard
-        self.ID_stall       = load_use_hazard or m1_m2_hazard
-        self.EX_bubble      = load_use_hazard
-        self.load_use_hazard = load_use_hazard
+        self.IF_stall       = load_use_hazard or m1_m2_hazard or load_use_hazard_2
+        self.ID_stall       = load_use_hazard or m1_m2_hazard or load_use_hazard_2
+        self.EX_bubble      = load_use_hazard or m1_m2_hazard or load_use_hazard_2
+        
+        
+
 
 
     def update(self):
 
         EX.reg_pc                   = self.pc
 
-        if Pipe.ID.EX_bubble or Pipe.EX.EX_bubble:
+        if self.EX_bubble or Pipe.EX.EX_bubble:
             EX.reg_inst             = WORD(BUBBLE)
             EX.reg_exception        = WORD(EXC_NONE)
             EX.reg_c_br_type        = WORD(BR_N)
@@ -452,7 +460,6 @@ class EX(Pipe):
 
         self.EX_bubble          = False
         self.ID_bubble          = False
-        self.pc_next            = self.pc
 
         # Check that the instruction is conditional branch
         # If Backward or jal, calculate the target address
@@ -463,11 +470,13 @@ class EX(Pipe):
                                                     opcode_name == "bgeu" or opcode_name == "blt" or opcode_name == "bltu" else \
                           0
 
+                          
+
         # The second input to ALU should be put into self.alu2_data for correct log msg.
         self.alu2_data          = self.op2_data
 
         # Perform ALU operation
-        self.alu_out = Pipe.cpu.alu.op(self.c_alu_fun, self.op1_data, self.alu2_data)
+        self.alu_out            = Pipe.cpu.alu.op(self.c_alu_fun, self.op1_data, self.alu2_data)
 
         # Adjust the output for jalr instruction (forwarded to IF)
         self.jump_reg_target    = self.alu_out & WORD(0xfffffffe) 
@@ -475,30 +484,33 @@ class EX(Pipe):
         # Calculate the branch/jump target address using an adder (forwarded to IF)
         self.brjmp_target       = Pipe.cpu.adder_brtarget.op(self.pc, self.op2_data) 
 
-        # Check for wrong prediction
-        self.pc_sel         =   PC_BRJMP        if  (Pipe.EX.reg_c_br_type == BR_NE and Pipe.EX.alu_out) or                  \
-                                                (Pipe.EX.reg_c_br_type == BR_EQ  and (not Pipe.EX.alu_out)) or               \
-                                                (Pipe.EX.reg_c_br_type == BR_GE  and Pipe.EX.alu_out) or                     \
-                                                (Pipe.EX.reg_c_br_type == BR_GEU and Pipe.EX.alu_out) or                     \
-                                                (Pipe.EX.reg_c_br_type == BR_LT  and (not Pipe.EX.alu_out)) or               \
-                                                (Pipe.EX.reg_c_br_type == BR_LTU and (not Pipe.EX.alu_out))  else            \
-                                PC_JALR     if  Pipe.EX.reg_c_br_type == BR_JR   else                                        \
-                                PC_4
-
-        pcplus4    = Pipe.cpu.adder_pcplus4.op(self.pc, 4)
+        self.pcplus4            = Pipe.cpu.adder_pcplus4.op(self.pc, 4)
 
         # Wrong prediction or JALR, ID and IF bubble
-        if  (imm_b < 0 and self.pc_sel == PC_BRJMP):
+        if  imm_b < 0 and ((self.reg_c_br_type == BR_NE and self.alu_out) or       \
+            (self.reg_c_br_type == BR_EQ  and (not self.alu_out)) or               \
+            (self.reg_c_br_type == BR_GE  and self.alu_out) or                     \
+            (self.reg_c_br_type == BR_GEU and self.alu_out) or                     \
+            (self.reg_c_br_type == BR_LT  and (not self.alu_out)) or               \
+            (self.reg_c_br_type == BR_LTU and (not self.alu_out))):
             self.EX_bubble  = True
             self.ID_bubble  = True
-            self.pc_next    = pcplus4
-        elif  (imm_b > 0 and self.pc_sel == PC_BRJMP):
+            self.pc_sel     = PC_4
+        elif imm_b > 0 and ((self.reg_c_br_type == BR_NE and (not self.alu_out)) or                  \
+             (self.reg_c_br_type == BR_EQ  and self.alu_out) or               \
+             (self.reg_c_br_type == BR_GE  and (not self.alu_out)) or                     \
+             (self.reg_c_br_type == BR_GEU and (not self.alu_out)) or                     \
+             (self.reg_c_br_type == BR_LT  and self.alu_out) or               \
+             (self.reg_c_br_type == BR_LTU and self.alu_out)):
+             self.EX_bubble = True
+             self.ID_bubble = True
+             self.pc_sel    = PC_BRJMP
+        elif self.reg_c_br_type == BR_JR:
             self.EX_bubble  = True
             self.ID_bubble  = True
-            self.pc_next    = self.brjmp_target
-        elif self.pc_sel == PC_JALR:
-            self.EX_bubble  = True
-            self.ID_bubble  = True
+            self.pc_sel     = PC_JALR
+        else:
+            self.pc_sel     = 3
             
         
 
