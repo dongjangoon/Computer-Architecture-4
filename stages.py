@@ -128,29 +128,33 @@ class IF(Pipe):
         rs1             = RISCV.rs1(self.inst)
         rd              = RISCV.rd(self.inst)
         
-        imm_b           = RISCV.imm_b(self.inst) if opcode_name == "beq" or opcode_name == "bne" or opcode_name == "bge" or     \
-                                                    opcode_name == "bgeu" or opcode_name == "blt" or opcode_name == "bltu" else \
-                          0
-
+        imm_b           = RISCV.imm_b(self.inst)
         imm_j           = RISCV.imm_j(self.inst)
         imm_i           = RISCV.imm_i(self.inst)
+
+        branch_check    = (opcode_name == "beq") or (opcode_name == "bne") or (opcode_name == "blt") or \
+                            (opcode_name == "bge") or (opcode_name == "bgeu") or (opcode_name == "blts")
 
         # Use Pipe.cpu.ras for the return address stack
         if (opcode_name == "jal" or opcode_name == "jalr") and (rd == 1):
             Pipe.cpu.ras.push(self.pcplus4)
 
-        ras_pop         = Pipe.cpu.ras.pop()
+        self.ras_address = 0
+        ras_pop = (0, False)
+        
+        if (opcode_name == "jalr") and (rd == 0) and (rs1 == 1) and (imm_i == 0):
+            ras_pop         = Pipe.cpu.ras.pop()
 
         ras_address     = ras_pop[0]
         ras_status      = ras_pop[1]
+        self.ras_address= ras_address
 
-        
         # select next pcpush
-        self.pc_next    =   Pipe.cpu.adder_if.op(self.pc, imm_b)    if imm_b <  WORD(0)                         else \
-                            Pipe.cpu.adder_if.op(self.pc, imm_j)    if opcode_name == "jal"                     else \
-                            Pipe.EX.brjmp_target                    if Pipe.EX.pc_sel == PC_BRJMP               else \
+        self.pc_next    =   Pipe.EX.brjmp_target                    if Pipe.EX.pc_sel == PC_BRJMP               else \
                             Pipe.EX.jump_reg_target                 if Pipe.EX.pc_sel == PC_JALR                else \
                             Pipe.EX.pcplus4                         if Pipe.EX.pc_sel == PC_4                   else \
+                            Pipe.cpu.adder_if.op(self.pc, imm_b)    if imm_b > 0x00001fff  and branch_check    else \
+                            Pipe.cpu.adder_if.op(self.pc, imm_j)    if opcode_name == "jal"                     else \
                             ras_address                             if ras_status                               else \
                             self.pcplus4
 
@@ -171,6 +175,7 @@ class IF(Pipe):
             ID.reg_inst         = self.inst
             ID.reg_exception    = self.exception
             ID.reg_pcplus4      = self.pcplus4
+            ID.reg_ras_address  = self.ras_address
         else:               # self.ID_stall
             pass            # Do not update
 
@@ -197,6 +202,7 @@ class ID(Pipe):
     reg_pc          = WORD(0)           # ID.reg_pc
     reg_inst        = WORD(BUBBLE)      # ID.reg_inst
     reg_exception   = WORD(EXC_NONE)    # ID.reg_exception
+    reg_ras_address = WORD(0)
 
     #--------------------------------------------------
 
@@ -238,6 +244,7 @@ class ID(Pipe):
         self.pc         = ID.reg_pc
         self.inst       = ID.reg_inst
         self.exception  = ID.reg_exception
+        self.ras_address= ID.reg_ras_address
 
         self.rs1        = RISCV.rs1(self.inst)
         self.rs2        = RISCV.rs2(self.inst)
@@ -390,6 +397,7 @@ class ID(Pipe):
             EX.reg_c_rf_wen         = self.c_rf_wen
             EX.reg_c_dmem_en        = self.c_dmem_en
             EX.reg_c_dmem_rw        = self.c_dmem_rw
+            EX.reg_ras_address      = self.ras_address
 
         # DO NOT TOUCH -----------------------------------------------
         Pipe.log(S_ID, self.pc, self.inst, self.log())
@@ -427,6 +435,7 @@ class EX(Pipe):
     reg_c_dmem_en       = False             # EX.reg_c_dmem_en
     reg_c_dmem_rw       = WORD(M_X)         # EX.reg_c_dmem_rw
     reg_c_br_type       = WORD(BR_N)        # EX.reg_c_br_type
+    reg_ras_address     = WORD(0)
 
     #--------------------------------------------------
 
@@ -471,6 +480,7 @@ class EX(Pipe):
         self.c_dmem_en          = EX.reg_c_dmem_en
         self.c_dmem_rw          = EX.reg_c_dmem_rw
         self.c_br_type          = EX.reg_c_br_type
+        self.ras_address        = EX.reg_ras_address
 
         self.EX_bubble          = False
         self.ID_bubble          = False
@@ -482,8 +492,11 @@ class EX(Pipe):
 
         imm_b           = RISCV.imm_b(self.inst)
 
-        # The second input to ALU should be put into self.alu2_data for correct log msg.
-        self.alu2_data          = self.op2_data
+        # For branch instructions, we use ALU to make comparisons between rs1 and rs2.
+        # Since op2_data has an immediate value (offset) for branch instructions,
+        # we change the input of ALU to rs2_data.
+        self.alu2_data  = self.rs2_data     if self.c_br_type in [ BR_NE, BR_EQ, BR_GE, BR_GEU, BR_LT, BR_LTU ] else \
+                          self.op2_data
 
         # Perform ALU operation
         self.alu_out            = Pipe.cpu.alu.op(self.c_alu_fun, self.op1_data, self.alu2_data)
@@ -511,21 +524,24 @@ class EX(Pipe):
                                     (self.c_br_type == BR_LTU and self.alu_out)
 
         # Wrong prediction or JALR, ID and IF bubble
-        if  imm_b < 0 and branch_wrong:
+        if  (imm_b > 0x00001fff) and branch_wrong:
             self.EX_bubble  = True
             self.ID_bubble  = True
             self.pc_sel     = PC_4
-        elif imm_b > 0 and branch_correct:
+        elif (imm_b > 0) and (imm_b <= 0x00001fff) and branch_correct:
              self.EX_bubble = True
              self.ID_bubble = True
              self.pc_sel    = PC_BRJMP
-        elif self.c_br_type == BR_JR and (not self.alu_out):
+        elif (self.c_br_type == BR_JR) and (self.jump_reg_target != self.ras_address):
             self.EX_bubble  = True
             self.ID_bubble  = True
             self.pc_sel     = PC_JALR
         else:
             self.pc_sel     = 3
 
+        # For jal and jalr instructions, pc+4 should be written to the rd
+        if self.c_wb_sel == WB_PC4:                   
+            self.alu_out        = self.pcplus4
 
     def update(self):
 
